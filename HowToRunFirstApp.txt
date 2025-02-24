@@ -1,0 +1,59 @@
+1. 环境准备：
+需要node和npm，先检测是否安装(安装Node.js后默认node和npm就安装完成了，如果没有安装，直接安装Node.js, 下载Node.js的Installer安装即可：https://nodejs.org/en/download/)。
+node -v
+npm -v
+
+2. 项目初始化
+mkdir my-electron-app && cd my-electron-app
+npm init(存在需要确认的选项，直接回车使用默认配置)
+
+3. 修改package.json文件
+{
+  "name": "my-electron-app",
+  "version": "1.0.0",
+  "description": "test Electron",  // 必须添加，打包会检查
+  "main": "main.js",  // 修改为main.js
+  "author": "Bin9153",  // 必须添加
+  "license": "MIT"
+}
+
+4. 安装Electron
+npm install --save-dev electron
+//或者
+npm install electron -D
+
+5. 配置启动项
+{
+  "scripts": {
+    "start": "electron ."
+  }
+}
+
+6. 创建main.js
+否则，使用npm start会出现错误，找不到main.js
+
+
+
+
+参考连接：
+https://www.electronjs.org/zh/docs/latest/tutorial/%E6%89%93%E5%8C%85%E6%95%99%E7%A8%8B
+
+执行的命令：
+npm install --save-dev @electron-forge/cli
+npx electron-forge import
+
+这两条命令执行完成后，会自动在package.json中添加如下内容：
+package.json
+  //...
+  "scripts": {
+    "start": "electron-forge start",
+    "package": "electron-forge package",
+    "make": "electron-forge make"
+  },
+  //...
+  
+使用项目中的 make 脚本，该脚本最终运行了 electron-forge make 命令，创建可分发文件：
+npm run make
+
+生成的可执行文件如下路径：
+First-electron-app\out\first-electron-app-win32-x64\first-electron-app.exe
