@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Log Viewer</title>
+    <style>
+        html, body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+        }
+        .container {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            padding: 20px;
+            box-sizing: border-box;
+            overflow: hidden;
+            border: 2px dashed transparent; /* 添加透明边框 */
+            transition: all 0.3s ease;
+        }
+        .container.dragover {
+            border-color: #4CAF50;
+            background-color: rgba(76, 175, 80, 0.1);
+        }
+        .table-container {
+            flex: 1 1 auto;
+            overflow: auto;
+            position: relative;
+            height: calc(100vh - 215px); /* 修改表格容器样式以适应搜索结果区域 */
+            min-height: 200px;
+            transition: height 0.3s ease;
+        }
+        .table-container.with-search-results {
+            height: calc(100vh - 365px);
+        }
+        #logTable {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+        }
+        #logTable thead {
+            position: sticky;
+            top: 0;
+            z-index: 1;
+            background: #fff;
+        }
+        #logTable th {
+            background-color: #f2f2f2;
+            position: relative;
+            min-width: 50px;
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            user-select: none; /* 防止拖拽时选中文本 */
+        }
+        #logTable td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .resizer {
+            position: absolute;
+            right: 0;
+            top: 0;
+            bottom: 0;
+            width: 5px;
+            cursor: col-resize;
+            background-color: #ccc;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        .resizer:hover {
+            opacity: 1;
+        }
+        .resizer.resizing {
+            opacity: 1;
+            background-color: #0066cc;
+        }
+        .selected-row {
+            background-color: #fff3cd !important;
+        }
+        .status-bar {
+            flex: 0 0 25px;
+            background: #f5f5f5;
+            border-top: 1px solid #ddd;
+            padding: 0 10px;
+            display: flex;
+            align-items: center;
+            font-size: 12px;
+        }
+        .progress-container {
+            flex: 1;
+            height: 10px;
+            background: #eee;
+            border-radius: 5px;
+            overflow: hidden;
+            display: none; /* 默认隐藏 */
+            margin: 0 10px;
+        }
+        .progress-bar {
+            width: 0%;
+            height: 100%;
+            background: #4CAF50;
+            transition: width 0.3s ease;
+        }
+        .status-text {
+            margin-right: 10px;
+            white-space: nowrap;
+        }
+        body.resizing {
+            cursor: col-resize;
+            user-select: none;
+        }
+        
+        /* 搜索框样式 */
+        .search-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: white;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+            display: none;
+            z-index: 1000;
+        }
+        
+        .search-container input {
+            width: 200px;
+            padding: 4px;
+            margin-bottom: 8px;
+        }
+        
+        .search-options {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 8px;
+        }
+        
+        /* 搜索结果区域样式 */
+        .search-results {
+            position: absolute;
+            bottom: 25px;
+            left: 0;
+            right: 0;
+            height: 150px;
+            background: white;
+            border-top: 1px solid #ddd;
+            overflow-y: auto;
+            display: none;
+            z-index: 100;
+        }
+        
+        .search-results-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        .search-results-table td {
+            padding: 4px 8px;
+            border: 1px solid #ddd;
+            font-size: 12px;
+        }
+        
+        .search-highlight {
+            background-color: #90EE90 !important;
+        }
+        
+        .close-button {
+            position: absolute;
+            right: 5px;
+            top: 5px;
+            cursor: pointer;
+            padding: 2px 6px;
+            border-radius: 3px;
+            background: #f0f0f0;
+        }
+        
+        .close-button:hover {
+            background: #ddd;
+        }
+        
+        /* 选项卡样式 */
+        .tabs {
+            display: flex;
+            background: #f0f0f0;
+            border-bottom: 1px solid #ddd;
+            padding: 10px 10px 0;
+            margin: -20px -20px 0;
+        }
+        
+        .tab {
+            padding: 8px 20px;
+            cursor: pointer;
+            border: 1px solid transparent;
+            border-bottom: none;
+            margin-right: 4px;
+            border-radius: 4px 4px 0 0;
+            background: #e4e4e4;
+        }
+        
+        .tab.active {
+            background: white;
+            border-color: #ddd;
+            margin-bottom: -1px;
+            padding-bottom: 9px;
+        }
+        
+        /* 内容区域样式调整 */
+        .content-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        
+        .page {
+            display: none;
+            flex: 1;
+            overflow: auto;
+        }
+        
+        .page.active {
+            display: flex;
+            flex-direction: column;
+        }
+        
+        /* 调整表格容器样式 */
+        .table-container {
+            height: calc(100vh - 255px);
+        }
+        
+        /* 添加表格相关样式 */
+        .log-table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+        }
+        
+        .log-table th, .log-table td {
+            padding: 8px;
+            border: 1px solid #ddd;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            min-width: 100px;
+        }
+        
+        .log-table thead tr {
+            position: sticky;
+            top: 0;
+            background: #f8f9fa;
+            z-index: 1;
+        }
+        
+        .table-container {
+            overflow: auto;
+            height: calc(100vh - 150px);
+            position: relative;
+        }
+
+        /* 添加滚动条样式 */
+        .table-container::-webkit-scrollbar {
+            width: 12px;
+            height: 12px;
+        }
+        
+        .table-container::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+        
+        .table-container::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 6px;
+        }
+        
+        .table-container::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+    </style>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            console.log('index.html is fully loaded and parsed');
+        });
+    </script>
+</head>
+<body>
+    <div class="container">
+        <div class="tabs">
+            <div class="tab active" data-page="trace">Trace</div>
+            <div class="tab" data-page="messages">Messages</div>
+            <div class="tab" data-page="ota">OTA</div>
+            <div class="tab" data-page="bookmarks">Bookmarks</div>
+        </div>
+        
+        <div class="content-container">
+            <div class="page active" id="messages-page">
+                <div class="table-container">
+                    <table id="messages-table" class="log-table">
+                        <thead>
+                            <tr class="header-row"></tr>
+                        </thead>
+                        <tbody id="messages-content"></tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <div class="page" id="ota-page">
+                <div class="table-container">
+                    <table id="ota-table" class="log-table">
+                        <thead>
+                            <tr class="header-row"></tr>
+                        </thead>
+                        <tbody id="ota-content"></tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <div class="page" id="trace-page">
+                <div class="table-container">
+                    <table id="trace-table" class="log-table">
+                        <thead>
+                            <tr class="header-row"></tr>
+                        </thead>
+                        <tbody id="trace-content"></tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <div class="page" id="bookmarks-page">
+                <div class="table-container">
+                    <table id="bookmarks-table" class="log-table">
+                        <thead>
+                            <tr class="header-row"></tr>
+                        </thead>
+                        <tbody id="bookmarks-content"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        
+        <div class="status-bar">
+            <span class="status-text">拖入日志文件到此处</span>
+            <div class="progress-container">
+                <div class="progress-bar"></div>
+            </div>
+        </div>
+        
+        <!-- 搜索框 -->
+        <div class="search-container" id="searchContainer">
+            <span class="close-button" id="closeSearch">×</span>
+            <input type="text" id="searchInput" placeholder="输入搜索内容...">
+            <div class="search-options">
+                <label>
+                    <input type="checkbox" id="moduleCheckbox"> Module
+                </label>
+                <label>
+                    <input type="checkbox" id="contextCheckbox" checked> Context
+                </label>
+            </div>
+            <div id="searchStatus"></div>
+        </div>
+        
+        <!-- 搜索结果区域 -->
+        <div class="search-results" id="searchResults">
+            <table class="search-results-table">
+                <tbody id="searchResultsContent"></tbody>
+            </table>
+        </div>
+    </div>
+    <script src="renderer.js"></script>
+</body>
+</html>
