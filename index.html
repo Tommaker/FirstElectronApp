@@ -148,47 +148,99 @@
         
         /* 搜索结果区域样式 */
         .search-results {
-            position: absolute;
-            bottom: 25px;
-            left: 0;
-            right: 0;
-            height: 150px;
+            position: fixed;
+            right: 20px;
+            bottom: 20px;
+            width: 600px;
+            max-height: 400px;
             background: white;
-            border-top: 1px solid #ddd;
-            overflow-y: auto;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
             display: none;
-            z-index: 100;
+            z-index: 1000;
+            resize: both; /* 支持双向缩放 */
+            min-width: 400px;  /* 最小宽度 */
+            min-height: 200px; /* 最小高度 */
+        }
+
+        .search-results-header {
+            padding: 8px;
+            background: #f0f0f0;
+            border-bottom: 1px solid #ddd;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: move;
+            user-select: none;
+        }
+
+        .search-results-header:hover {
+            cursor: grab;
         }
         
+        .search-results-header:active {
+            cursor: grabbing;
+        }
+
+        .search-results-content {
+            max-height: calc(400px - 37px);
+            overflow-y: auto;
+            padding: 8px;
+        }
+
         .search-results-table {
             width: 100%;
             border-collapse: collapse;
         }
-        
+
+        .search-results-table tr {
+            cursor: pointer;
+            border-bottom: 1px solid #eee;
+        }
+
+        .search-results-table tr:hover {
+            background-color: #f5f5f5;
+        }
+
         .search-results-table td {
             padding: 4px 8px;
-            border: 1px solid #ddd;
-            font-size: 12px;
         }
-        
-        .search-highlight {
+
+        .search-highlight-fixed {
             background-color: #90EE90 !important;
+            transition: background-color 0.3s ease;
+            animation: none !important; /* 防止被其他动画覆盖 */
         }
-        
-        .close-button {
-            position: absolute;
-            right: 5px;
-            top: 5px;
+
+        /* 确保高亮优先级 */
+        tr.search-highlight-fixed {
+            z-index: 2;
+            position: relative;
+        }
+
+        .search-results .close-button {
+            padding: 4px 8px;
             cursor: pointer;
-            padding: 2px 6px;
-            border-radius: 3px;
-            background: #f0f0f0;
+            font-weight: bold;
         }
-        
-        .close-button:hover {
-            background: #ddd;
+
+        .search-results .close-button:hover {
+            color: #666;
         }
-        
+
+        /* 添加拖动调整大小的手柄 */
+        .search-results::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            cursor: ns-resize;
+            background: transparent;
+        }
+
         /* 选项卡样式 */
         .tabs {
             display: flex;
@@ -206,13 +258,17 @@
             margin-right: 4px;
             border-radius: 4px 4px 0 0;
             background: #e4e4e4;
+            transition: all 0.3s ease; /* 添加过渡效果 */
         }
         
         .tab.active {
-            background: white;
-            border-color: #ddd;
+            background: #90EE90; /* 修改为亮绿色 */
+            border-color: #4CAF50;
             margin-bottom: -1px;
             padding-bottom: 9px;
+            color: #1a472a; /* 深绿色文字，提高对比度 */
+            font-weight: 500; /* 略微加粗 */
+            box-shadow: 0 -2px 5px rgba(0,0,0,0.1); /* 添加轻微阴影 */
         }
         
         /* 内容区域样式调整 */
@@ -286,6 +342,73 @@
         .table-container::-webkit-scrollbar-thumb:hover {
             background: #555;
         }
+
+        /* 添加书签相关样式 */
+        .selected-row {
+            background-color: #e3f2fd !important;
+        }
+        
+        tr[data-bookmarked="true"] {
+            background-color: #fff3cd;
+        }
+        
+        .bookmark-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            background-color: #ffc107;
+            border-radius: 50%;
+            margin-right: 4px;
+        }
+
+        /* 添加同步高亮样式 */
+        .synced-row {
+            animation: highlight-flash 3s;
+        }
+        
+        @keyframes highlight-flash {
+            0% { background-color: #ffeb3b; }
+            70% { background-color: #ffeb3b; }
+            100% { background-color: transparent; }
+        }
+
+        /* 添加四个角的缩放手柄 */
+        .search-results .resize-handle {
+            position: absolute;
+            width: 10px;
+            height: 10px;
+            background: transparent;
+        }
+
+        .search-results .resize-handle.top-left {
+            top: 0;
+            left: 0;
+            cursor: nw-resize;
+        }
+
+        .search-results .resize-handle.top-right {
+            top: 0;
+            right: 0;
+            cursor: ne-resize;
+        }
+
+        .search-results .resize-handle.bottom-left {
+            bottom: 0;
+            left: 0;
+            cursor: sw-resize;
+        }
+
+        .search-results .resize-handle.bottom-right {
+            bottom: 0;
+            right: 0;
+            cursor: se-resize;
+        }
+
+        /* 添加字体相关样式 */
+        .font-adjustable {
+            font-family: inherit;
+            transition: all 0.3s ease;
+        }
     </style>
     <script>
         document.addEventListener('DOMContentLoaded', () => {
@@ -305,9 +428,18 @@
         <div class="content-container">
             <div class="page active" id="messages-page">
                 <div class="table-container">
-                    <table id="messages-table" class="log-table">
+                    <table id="messages-table" class="log-table font-adjustable">
                         <thead>
-                            <tr class="header-row"></tr>
+                            <tr class="header-row">
+                                <th>Index</th>
+                                <th>LogID</th>
+                                <th>SrcMod</th>
+                                <th>DstMod</th>
+                                <th>SFN</th>
+                                <th>Time</th>
+                                <th>Message</th>
+                                <th>Msg Content</th>
+                            </tr>
                         </thead>
                         <tbody id="messages-content"></tbody>
                     </table>
@@ -316,9 +448,18 @@
             
             <div class="page" id="ota-page">
                 <div class="table-container">
-                    <table id="ota-table" class="log-table">
+                    <table id="ota-table" class="log-table font-adjustable">
                         <thead>
-                            <tr class="header-row"></tr>
+                            <tr class="header-row">
+                                <th>Index</th>
+                                <th>LogID</th>
+                                <th>SrcMod</th>
+                                <th>DstMod</th>
+                                <th>SFN</th>
+                                <th>Time</th>
+                                <th>OTA Message</th>
+                                <th>Msg Content</th>
+                            </tr>
                         </thead>
                         <tbody id="ota-content"></tbody>
                     </table>
@@ -327,9 +468,17 @@
             
             <div class="page" id="trace-page">
                 <div class="table-container">
-                    <table id="trace-table" class="log-table">
+                    <table id="trace-table" class="log-table font-adjustable">
                         <thead>
-                            <tr class="header-row"></tr>
+                            <tr class="header-row">
+                                <th>Index</th>
+                                <th>LogID</th>
+                                <th>Level</th>
+                                <th>Module</th>
+                                <th>SFN</th>
+                                <th>Time</th>
+                                <th>Context</th>
+                            </tr>
                         </thead>
                         <tbody id="trace-content"></tbody>
                     </table>
@@ -338,9 +487,17 @@
             
             <div class="page" id="bookmarks-page">
                 <div class="table-container">
-                    <table id="bookmarks-table" class="log-table">
+                    <table id="bookmarks-table" class="log-table font-adjustable">
                         <thead>
-                            <tr class="header-row"></tr>
+                            <tr class="header-row">
+                                <th>Index</th>
+                                <th>LogID</th>
+                                <th>Level/SrcMod</th>
+                                <th>Module</th>
+                                <th>SFN</th>
+                                <th>Time</th>
+                                <th>Context</th>
+                            </tr>
                         </thead>
                         <tbody id="bookmarks-content"></tbody>
                     </table>
@@ -372,9 +529,19 @@
         
         <!-- 搜索结果区域 -->
         <div class="search-results" id="searchResults">
-            <table class="search-results-table">
-                <tbody id="searchResultsContent"></tbody>
-            </table>
+            <div class="resize-handle top-left"></div>
+            <div class="resize-handle top-right"></div>
+            <div class="resize-handle bottom-left"></div>
+            <div class="resize-handle bottom-right"></div>
+            <div class="search-results-header">
+                <span>搜索结果</span>
+                <span class="close-button" id="closeSearchResults">×</span>
+            </div>
+            <div class="search-results-content">
+                <table class="search-results-table">
+                    <tbody id="searchResultsContent"></tbody>
+                </table>
+            </div>
         </div>
     </div>
     <script src="renderer.js"></script>

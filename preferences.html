@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Preferences</title>
+    <style>
+        body {
+            padding: 20px;
+            font-family: system-ui;
+            margin: 0;
+            background-color: #f5f5f5;
+        }
+        .setting-group {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .setting-title {
+            font-size: 14px;
+            font-weight: bold;
+            margin-bottom: 15px;
+            color: #333;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #666;
+            font-size: 13px;
+        }
+        select, input {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            margin-bottom: 15px;
+            font-size: 13px;
+        }
+        select:focus, input:focus {
+            outline: none;
+            border-color: #4CAF50;
+        }
+        .buttons {
+            text-align: right;
+            padding: 10px 0;
+        }
+        button {
+            padding: 8px 20px;
+            margin-left: 10px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        #btnApply {
+            background-color: #4CAF50;
+            color: white;
+        }
+        #btnCancel {
+            background-color: #f0f0f0;
+            color: #333;
+        }
+        button:hover {
+            opacity: 0.9;
+        }
+        .preview-text {
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            margin-top: 10px;
+            font-size: 13px;
+        }
+    </style>
+</head>
+<body>
+    <div class="setting-group">
+        <div class="setting-title">Log Display Settings</div>
+        
+        <label for="fontFamily">Font Family:</label>
+        <select id="fontFamily">
+            <option value="Arial">Arial</option>
+            <option value="Consolas">Consolas</option>
+            <option value="Courier New">Courier New</option>
+            <option value="Monaco">Monaco</option>
+            <option value="monospace">Monospace</option>
+        </select>
+        
+        <label for="fontSize">Font Size:</label>
+        <input type="number" id="fontSize" min="8" max="24" value="12">
+        
+        <div class="preview-text" id="previewText">
+            Preview: Sample Log Text
+        </div>
+    </div>
+    
+    <div class="buttons">
+        <button id="btnCancel">Cancel</button>
+        <button id="btnApply">Apply</button>
+    </div>
+
+    <script src="preferences.js"></script>
+</body>
+</html>

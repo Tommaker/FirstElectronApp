@@ -41,6 +41,21 @@ const tableContainers = {
     }
 };
 
+// 添加表头配置
+const TABLE_HEADERS = {
+    trace: ['Index', 'LogID', 'Level', 'Module', 'SFN', 'Time', 'Context'],
+    messages: ['Index', 'LogID', 'SrcMod', 'DstMod', 'SFN', 'Time', 'Message', 'Msg Content'],
+    ota: ['Index', 'LogID', 'SrcMod', 'DstMod', 'SFN', 'Time', 'OTA Message', 'Msg Content'],
+    bookmarks: ['Index', 'LogID', 'Level/SrcMod', 'Module', 'SFN', 'Time', 'Context'] // 修改表头配置中的 bookmarks 配置
+};
+
+// 修改书签状态管理对象
+const bookmarkState = {
+    currentLogFile: '',
+    selectedRows: new Set(),
+    bookmarks: new Map() // key: index, value: { sourcePageId, index }
+};
+
 // 添加选项卡切换逻辑
 tabs.forEach(tab => {
     tab.addEventListener('click', () => {
@@ -56,6 +71,14 @@ tabs.forEach(tab => {
         if (activeTable) {
             const headers = activeTable.querySelectorAll('th');
             autoAdjustAllColumns(headers.length, activeTable);
+        }
+
+        // 在页面切换完成后执行同步
+        if (syncState.lastClickedIndex !== -1 && 
+            Date.now() - syncState.lastClickedTime < 30000) { // 30秒内有效
+            setTimeout(() => {
+                syncToNearestRow(syncState.lastClickedIndex);
+            }, 100); // 等待页面渲染完成
         }
     });
 });
@@ -116,6 +139,7 @@ document.addEventListener('keydown', (e) => {
 });
 
 function handleFile(filePath) {
+    bookmarkState.currentLogFile = filePath;
     console.log('[DEBUG] 开始处理文件:', filePath);
     const startTime = performance.now();
     statusText.textContent = '正在加载文件...';
@@ -161,6 +185,22 @@ function handleFile(filePath) {
         console.error('[ERROR] 文件处理错误:', error);
         statusText.textContent = `文件加载失败: ${error.message}`;
         progressContainer.style.display = 'none';
+    }
+
+    // 尝试加载对应的书签文件
+    const markFilePath = filePath.replace(/\.[^.]+$/, '.mark');
+    try {
+        if (fs.existsSync(markFilePath)) {
+            const markContent = fs.readFileSync(markFilePath, 'utf-8');
+            const bookmarks = JSON.parse(markContent);
+            bookmarks.forEach(bookmark => {
+                dataCache.bookmarks.push(bookmark);
+                bookmarkState.bookmarks.set(bookmark.index, bookmark);
+            });
+            console.log('[DEBUG] Loaded bookmarks from:', markFilePath);
+        }
+    } catch (error) {
+        console.warn('[WARN] Failed to load bookmark file:', error);
     }
 }
 
@@ -326,10 +366,12 @@ function processFileContent(lines, progressBar, progressContainer, startTime) {
             const { parts, type, logId } = e.data;
             
             if (type === 'header') {
-                console.log('[DEBUG] 处理表头:', parts);
-                const headers = parts; // 使用所有列，而不是只取前7个
+                console.log('[DEBUG] 处理表头');
                 
-                // 确保所有表头元素都存在
+                // 使用文件提供的表头作为备用
+                const fileHeaders = parts;
+                
+                // 为每个页面设置预定义的表头
                 Object.entries(tableContainers).forEach(([key, container]) => {
                     if (!container.headerRow) {
                         console.error(`[ERROR] 找不到表头元素: ${key}-table thead tr`);
@@ -337,6 +379,8 @@ function processFileContent(lines, progressBar, progressContainer, startTime) {
                     }
                     
                     try {
+                        // 优先使用预定义表头，如果没有则使用文件提供的表头
+                        const headers = TABLE_HEADERS[key] || fileHeaders;
                         setupTableHeader(container.headerRow, headers);
                         console.log(`[DEBUG] 成功设置 ${key} 表头`);
                     } catch (error) {
@@ -435,7 +479,7 @@ function updateActivePageDisplay() {
 }
 
 // 渲染可见行
-function renderVisibleRows(pageId, scrollTop) {
+function renderVisibleRows(pageId, scrollTop, highlightIndex = -1, shouldScroll = true) {
     const container = tableContainers[pageId];
     const data = dataCache[pageId];
     
@@ -466,7 +510,14 @@ function renderVisibleRows(pageId, scrollTop) {
     
     for (let i = startIndex; i < endIndex; i++) {
         if (data[i]) {
-            const row = createTableRow(data[i].parts);
+            const row = createTableRow(data[i].parts, i);
+            if (syncState.targetHighlight && 
+                parseInt(data[i].parts[0]) === syncState.targetHighlight.index &&
+                pageId === syncState.targetHighlight.pageId) {
+                row.classList.add('search-highlight-fixed');
+                setupHighlightObserver(row);
+                syncState.currentHighlightedRow = row;
+            }
             container.content.appendChild(row);
         }
     }
@@ -616,7 +667,7 @@ function initializeVirtualScroll(dataLines, headers, worker, progressBar, progre
         // 处理可见区域的数据
         for (let i = visibleStartIndex; i < visibleEndIndex; i++) {
             if (processedData[i]) {
-                const row = createTableRow(processedData[i], headers);
+                const row = createTableRow(processedData[i], i);
                 // 恢复搜索高亮状态
                 if (highlightedRows.includes(i)) {
                     row.classList.add('search-highlight');
@@ -759,18 +810,54 @@ function autoAdjustAllColumns(totalColumns, table) {
     document.body.removeChild(testDiv);
 }
 
-function createTableRow(columns) {
+// 修改 createTableRow 函数中的双击处理
+function createTableRow(columns, index) {
     const row = document.createElement('tr');
+    row.dataset.index = columns[0]; // 使用实际的日志 Index
     
-    // 添加行点击事件
-    row.addEventListener('click', function() {
-        // 获取当前活动页面的表格内容区域
+    // 添加双击处理
+    row.addEventListener('dblclick', function(e) {
+        e.preventDefault();
         const activePage = document.querySelector('.page.active');
-        const tableContent = activePage.querySelector('tbody');
-        tableContent.querySelectorAll('tr').forEach(tr => {
-            tr.classList.remove('selected-row');
-        });
-        row.classList.add('selected-row');
+        const pageId = activePage.id.replace('-page', '');
+        
+        // 使用真实的 log index
+        syncState.lastClickedIndex = parseInt(columns[0]);
+        syncState.lastClickedTime = Date.now();
+        syncState.sourcePageId = pageId;
+        
+        console.log(`[DEBUG] Double clicked row with index ${syncState.lastClickedIndex} in ${pageId}`);
+        
+        // 只设置高亮状态，不滚动
+        highlightSyncedRow(row, false);
+    });
+    
+    // 修改行点击事件
+    row.addEventListener('click', function(e) {
+        const activePage = document.querySelector('.page.active');
+        const pageId = activePage.id.replace('-page', '');
+        
+        if (!e.ctrlKey) {
+            // 单击时清除其他选中
+            activePage.querySelectorAll('tr').forEach(tr => {
+                tr.classList.remove('selected-row');
+            });
+            bookmarkState.selectedRows.clear();
+        }
+        
+        row.classList.toggle('selected-row');
+        if (row.classList.contains('selected-row')) {
+            bookmarkState.selectedRows.add({
+                pageId,
+                index,
+                data: columns
+            });
+        } else {
+            bookmarkState.selectedRows.delete({
+                pageId,
+                index
+            });
+        }
     });
     
     columns.forEach(column => {
@@ -800,6 +887,32 @@ function hideSearch() {
 }
 
 closeSearch.addEventListener('click', hideSearch);
+
+// 添加清除高亮的函数 - 需要移到 performSearch 函数之前定义
+function clearHighlights() {
+    // 清除搜索高亮
+    const highlightedRows = document.querySelectorAll('.search-highlight, .search-highlight-fixed');
+    highlightedRows.forEach(row => {
+        row.classList.remove('search-highlight');
+        row.classList.remove('search-highlight-fixed');
+    });
+    
+    // 清空搜索结果
+    if (searchResultsContent) {
+        searchResultsContent.innerHTML = '';
+    }
+    
+    // 重置搜索状态
+    if (searchStatus) {
+        searchStatus.textContent = '';
+    }
+    
+    // 清除任何现有观察器
+    if (syncState.currentObserver) {
+        syncState.currentObserver.disconnect();
+        syncState.currentObserver = null;
+    }
+}
 
 // 搜索处理函数
 let searchTimeout;
@@ -834,13 +947,13 @@ function performSearch() {
         const cells = row.querySelectorAll('td');
         
         if (cells.length > 0) {
-            if (searchModule && cells[4]) { // Module列
-                if (cells[4].textContent.toLowerCase().includes(searchTerm)) {
+            if (searchModule && cells[3]) { // Module列
+                if (cells[3].textContent.toLowerCase().includes(searchTerm)) {
                     found = true;
                 }
             }
-            if (searchContext && cells[7]) { // Context列
-                if (cells[7].textContent.toLowerCase().includes(searchTerm)) {
+            if (searchContext && cells[6]) { // Context列
+                if (cells[6].textContent.toLowerCase().includes(searchTerm)) {
                     found = true;
                 }
             }
@@ -848,12 +961,7 @@ function performSearch() {
             if (found) {
                 row.classList.add('search-highlight');
                 // 创建一个新行用于搜索结果显示
-                const resultRow = document.createElement('tr');
-                cells.forEach(cell => {
-                    const td = document.createElement('td');
-                    td.textContent = cell.textContent;
-                    resultRow.appendChild(td);
-                });
+                const resultRow = createSearchResultRow(cells, activePage.id.replace('-page', ''), row.dataset.index);
                 matches.push(resultRow);
             }
         }
@@ -868,11 +976,131 @@ function performSearch() {
     searchStatus.textContent = `找到 ${matches.length} 个匹配项`;
 }
 
-function clearHighlights() {
-    const highlightedRows = document.querySelectorAll('.search-highlight');
-    highlightedRows.forEach(row => row.classList.remove('search-highlight'));
-    searchResultsContent.innerHTML = '';
-    searchStatus.textContent = '';
+// 修改创建搜索结果行的函数
+function createSearchResultRow(cells, pageId, index) {
+    const row = document.createElement('tr');
+    row.setAttribute('data-page', pageId);
+    row.setAttribute('data-index', index);
+    
+    cells.forEach(cell => {
+        const td = document.createElement('td');
+        td.textContent = cell.textContent;
+        row.appendChild(td);
+    });
+    
+    // 修改双击事件处理
+    row.addEventListener('dblclick', async function(e) {
+        e.preventDefault();
+        const index = this.getAttribute('data-index');
+        const pageId = this.getAttribute('data-page');
+        
+        // 移除其他行的固定高亮
+        clearHighlightedRows();
+        
+        // 切换到对应页面
+        const tab = document.querySelector(`.tab[data-page="${pageId}"]`);
+        if (tab) {
+            // 保存高亮信息
+            syncState.targetHighlight = {
+                index: parseInt(index),
+                pageId: pageId
+            };
+            
+            // 切换页面
+            tab.click();
+            
+            // 等待页面切换完成
+            await new Promise(resolve => setTimeout(resolve, 200));
+            
+            // 查找目标行并高亮
+            highlightTargetRow(pageId, index);
+        }
+    });
+    
+    return row;
+}
+
+// 添加清除高亮的辅助函数
+function clearHighlightedRows() {
+    // 清除所有固定高亮
+    document.querySelectorAll('.search-highlight-fixed').forEach(el => {
+        el.classList.remove('search-highlight-fixed');
+    });
+    
+    // 清除任何存在的观察器
+    if (syncState.currentObserver) {
+        syncState.currentObserver.disconnect();
+        syncState.currentObserver = null;
+    }
+}
+
+// 添加高亮目标行的函数
+function highlightTargetRow(pageId, index) {
+    const data = dataCache[pageId];
+    if (!data) return;
+    
+    // 查找真实的数组索引
+    const arrayIndex = data.findIndex(item => 
+        parseInt(item.parts[0]) === parseInt(index)
+    );
+    
+    if (arrayIndex !== -1) {
+        // 计算滚动位置
+        const rowHeight = 35;
+        const tableContainer = tableContainers[pageId].content.closest('.table-container');
+        const viewportHeight = tableContainer.clientHeight;
+        const scrollPosition = (arrayIndex * rowHeight) - (viewportHeight / 2) + (rowHeight / 2);
+        
+        // 设置滚动位置
+        tableContainer.scrollTop = scrollPosition;
+        
+        // 渲染并高亮目标行
+        setTimeout(() => {
+            // 找到目标行
+            const targetRow = findRowByIndex(index);
+            if (targetRow) {
+                // 添加高亮类
+                targetRow.classList.add('search-highlight-fixed');
+                
+                // 确保目标行可见
+                targetRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                
+                // 设置持续观察
+                setupHighlightObserver(targetRow);
+                
+                // 保存当前高亮行的引用
+                syncState.currentHighlightedRow = targetRow;
+            }
+        }, 50);
+    }
+}
+
+// 添加高亮观察器设置函数
+function setupHighlightObserver(targetRow) {
+    // 清除现有观察器
+    if (syncState.currentObserver) {
+        syncState.currentObserver.disconnect();
+    }
+    
+    // 创建新的观察器
+    const observer = new MutationObserver((mutations, obs) => {
+        mutations.forEach(mutation => {
+            if (mutation.type === 'attributes' && 
+                mutation.attributeName === 'class' &&
+                !targetRow.classList.contains('search-highlight-fixed')) {
+                targetRow.classList.add('search-highlight-fixed');
+            }
+        });
+    });
+    
+    // 开始观察
+    observer.observe(targetRow, {
+        attributes: true,
+        attributeFilter: ['class']
+    });
+    
+    // 保存观察器引用
+    syncState.currentObserver = observer;
 }
 
 // 修改搜索相关函数的初始化
@@ -912,16 +1140,19 @@ function finishProcessing() {
     
     statusText.textContent = `已加载数据：Messages ${dataCache.messages.length}, OTA ${dataCache.ota.length}, Trace ${dataCache.trace.length} 条记录，用时：${duration}s`;
     
+    // 加载书签
+    loadBookmarks();
+    
     // 更新当前页面显示
+    updateActivePageDisplay();
+    
+    // 自动调整列宽
     const activePage = document.querySelector('.page.active');
     if (!activePage) {
         console.warn('[WARN] No active page found');
         return;
     }
 
-    updateActivePageDisplay();
-    
-    // 自动调整列宽
     const activeTable = activePage.querySelector('table');
     if (!activeTable) {
         console.warn('[WARN] No active table found');
@@ -1012,7 +1243,7 @@ function updateActivePageDisplay() {
 }
 
 // 修改渲染可见行函数
-function renderVisibleRows(pageId, scrollTop) {
+function renderVisibleRows(pageId, scrollTop, highlightIndex = -1, shouldScroll = true) {
     const container = tableContainers[pageId];
     const data = dataCache[pageId];
     
@@ -1043,7 +1274,10 @@ function renderVisibleRows(pageId, scrollTop) {
     
     for (let i = startIndex; i < endIndex; i++) {
         if (data[i]) {
-            const row = createTableRow(data[i].parts);
+            const row = createTableRow(data[i].parts, i);
+            if (i === highlightIndex) {
+                highlightSyncedRow(row, shouldScroll);
+            }
             container.content.appendChild(row);
         }
     }
@@ -1063,3 +1297,811 @@ document.addEventListener('DOMContentLoaded', () => {
     // 初始化完成后更新当前页面显示
     updateActivePageDisplay();
 });
+
+// 添加书签快捷键处理函数
+function handleBookmarkHotkey(e) {
+    if (e.ctrlKey && e.key === 'b') {
+        e.preventDefault();
+        const activePage = document.querySelector('.page.active');
+        const pageId = activePage.id.replace('-page', '');
+        
+        if (pageId === 'bookmarks') {
+            // 从书签中移除选中的行
+            removeSelectedBookmarks();
+        } else {
+            // 添加选中的行到书签
+            addSelectedToBookmarks();
+        }
+    }
+}
+
+// 添加书签处理函数
+function addSelectedToBookmarks() {
+    if (bookmarkState.selectedRows.size === 0) return;
+    
+    let added = false;
+    bookmarkState.selectedRows.forEach(row => {
+        if (!bookmarkState.bookmarks.has(row.index)) {
+            const sourceData = dataCache[row.pageId];
+            if (sourceData && sourceData[row.index]) {
+                dataCache.bookmarks.push({
+                    parts: sourceData[row.index].parts,
+                    index: row.index,
+                    sourcePageId: row.pageId
+                });
+                bookmarkState.bookmarks.set(row.index, {
+                    sourcePageId: row.pageId,
+                    index: row.index
+                });
+                added = true;
+            }
+        }
+    });
+    
+    if (added) {
+        saveBookmarks();
+        updateActivePageDisplay();
+    }
+    
+    bookmarkState.selectedRows.clear();
+}
+
+// 移除书签处理函数
+function removeSelectedBookmarks() {
+    if (bookmarkState.selectedRows.size === 0) return;
+    
+    let removed = false;
+    bookmarkState.selectedRows.forEach(row => {
+        const index = dataCache.bookmarks.findIndex(b => b.index === row.index);
+        if (index !== -1) {
+            dataCache.bookmarks.splice(index, 1);
+            bookmarkState.bookmarks.delete(row.index);
+            removed = true;
+        }
+    });
+    
+    if (removed) {
+        saveBookmarks();
+        updateActivePageDisplay();
+    }
+    
+    bookmarkState.selectedRows.clear();
+}
+
+// 保存书签到文件
+function saveBookmarks() {
+    if (!bookmarkState.currentLogFile) {
+        console.warn('[WARN] No log file loaded, cannot save bookmarks');
+        return;
+    }
+    
+    const markFilePath = bookmarkState.currentLogFile.replace(/\.[^.]+$/, '.mark');
+    try {
+        // 只保存索引信息
+        const bookmarkData = Array.from(bookmarkState.bookmarks.values()).map(bookmark => ({
+            sourcePageId: bookmark.sourcePageId,
+            index: bookmark.index
+        }));
+        
+        fs.writeFileSync(markFilePath, JSON.stringify(bookmarkData, null, 2), 'utf-8');
+        console.log('[DEBUG] Saved bookmarks to:', markFilePath);
+    } catch (error) {
+        console.error('[ERROR] Failed to save bookmarks:', error);
+    }
+}
+
+// 修改加载书签函数
+function loadBookmarks() {
+    if (!bookmarkState.currentLogFile) {
+        console.warn('[WARN] No log file loaded, cannot load bookmarks');
+        return;
+    }
+
+    const markFilePath = bookmarkState.currentLogFile.replace(/\.[^.]+$/, '.mark');
+    try {
+        if (fs.existsSync(markFilePath)) {
+            console.log('[DEBUG] Loading bookmarks from:', markFilePath);
+            const markContent = fs.readFileSync(markFilePath, 'utf-8');
+            const bookmarkIndexes = JSON.parse(markContent);
+            
+            // 清除现有书签
+            bookmarkState.bookmarks.clear();
+            dataCache.bookmarks = [];
+            
+            // 根据索引从各个页面加载数据
+            bookmarkIndexes.forEach(bookmark => {
+                const sourceData = dataCache[bookmark.sourcePageId];
+                if (sourceData && sourceData[bookmark.index]) {
+                    const logData = sourceData[bookmark.index];
+                    dataCache.bookmarks.push({
+                        parts: logData.parts,
+                        index: bookmark.index,
+                        sourcePageId: bookmark.sourcePageId
+                    });
+                    bookmarkState.bookmarks.set(bookmark.index, {
+                        sourcePageId: bookmark.sourcePageId,
+                        index: bookmark.index
+                    });
+                }
+            });
+            
+            console.log(`[DEBUG] Loaded ${dataCache.bookmarks.length} bookmarks`);
+            
+            // 更新书签页面显示
+            if (document.querySelector('.page.active').id === 'bookmarks-page') {
+                updateActivePageDisplay();
+            }
+        }
+    } catch (error) {
+        console.warn('[WARN] Failed to load bookmark file:', error);
+    }
+}
+
+// 添加键盘事件监听
+document.addEventListener('keydown', handleBookmarkHotkey);
+
+// 添加位置同步状态管理
+const syncState = {
+    lastClickedIndex: -1,
+    lastClickedTime: 0,
+    sourcePageId: null,
+    currentHighlightedRow: null,
+    currentObserver: null,
+    targetHighlight: null  // 保存目标高亮信息
+};
+
+// 修改同步到最近行的函数
+function syncToNearestRow(targetIndex) {
+    const activePage = document.querySelector('.page.active');
+    const pageId = activePage.id.replace('-page', '');
+    const data = dataCache[pageId];
+    
+    if (!data || data.length === 0) {
+        console.log(`[DEBUG] No data available for page ${pageId}`);
+        return;
+    }
+    
+    console.log(`[DEBUG] Finding nearest row to index ${targetIndex} in ${pageId}`);
+    
+    // 查找最接近目标索引的行
+    let nearestItem = null;
+    let minDiff = Number.MAX_VALUE;
+    
+    data.forEach((item, arrayIndex) => {
+        // 确保 item.parts 存在且有第一个元素
+        if (!item || !item.parts || !item.parts[0]) {
+            return;
+        }
+
+        const itemIndex = parseInt(item.parts[0]);
+        if (isNaN(itemIndex)) {
+            return;
+        }
+
+        const diff = Math.abs(itemIndex - targetIndex);
+        if (nearestItem === null || 
+            diff < minDiff || 
+            (diff === minDiff && itemIndex < parseInt(nearestItem.data.parts[0]))) {
+            minDiff = diff;
+            nearestItem = {
+                data: item,
+                arrayIndex: arrayIndex,
+                realIndex: itemIndex
+            };
+        }
+    });
+    
+    if (nearestItem) {
+        console.log(`[DEBUG] Found nearest row: array index ${nearestItem.arrayIndex}, real index ${nearestItem.realIndex}`);
+        // 切换页面时一定要滚动到中间并高亮
+        scrollToAndHighlight(nearestItem.arrayIndex, pageId, true);
+    }
+}
+
+// 修改滚动和高亮函数
+function scrollToAndHighlight(arrayIndex, pageId, shouldScroll = true) {
+    const container = tableContainers[pageId];
+    const tableContainer = container.content.closest('.table-container');
+    const rowHeight = 35;
+    
+    if (shouldScroll) {
+        // 计算滚动位置使目标行出现在视图中间
+        const viewportHeight = tableContainer.clientHeight;
+        const scrollPosition = (arrayIndex * rowHeight) - (viewportHeight / 2) + (rowHeight / 2);
+        tableContainer.scrollTop = scrollPosition;
+    }
+    
+    // 等待渲染完成后高亮行
+    setTimeout(() => {
+        renderVisibleRows(pageId, tableContainer.scrollTop, arrayIndex, shouldScroll);
+    }, 5000);
+}
+
+// 修改高亮同步行的函数，添加是否需要滚动的参数
+function highlightSyncedRow(row, shouldScroll = true) {
+    // 移除所有现有高亮
+    document.querySelectorAll('.synced-row').forEach(r => {
+        r.classList.remove('synced-row');
+    });
+    
+    // 添加新的高亮
+    row.classList.add('synced-row');
+    
+    // 根据参数决定是否滚动
+    if (shouldScroll) {
+        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    
+    console.log(`[DEBUG] Highlighted row with index ${row.dataset.index}, scroll: ${shouldScroll}`);
+    
+    // 10秒后自动清除高亮
+    setTimeout(() => {
+        row.classList.remove('synced-row');
+    }, 10000);
+}
+
+// 修改 DOMContentLoaded 事件处理函数
+document.addEventListener('DOMContentLoaded', () => {
+    console.log('[DEBUG] DOM loaded, validating table structure...');
+    validateTableStructure();
+    initializeScrollHandlers();
+    
+    // 初始化所有表格的表头
+    Object.entries(tableContainers).forEach(([key, container]) => {
+        if (container.headerRow && TABLE_HEADERS[key]) {
+            setupTableHeader(container.headerRow, TABLE_HEADERS[key]);
+            console.log(`[DEBUG] Initialized headers for ${key} table`);
+        }
+    });
+
+    // 更新当前页面显示
+    updateActivePageDisplay();
+});
+
+// 添加搜索结果区域拖动和大小调整功能
+document.addEventListener('DOMContentLoaded', () => {
+    const searchResults = document.getElementById('searchResults');
+    const searchResultsHeader = searchResults.querySelector('.search-results-header');
+    const closeSearchResults = document.getElementById('closeSearchResults');
+    
+    let isDragging = false;
+    let currentY;
+    let initialY;
+    let yOffset = 0;
+
+    // 拖动搜索结果窗口
+    searchResultsHeader.addEventListener('mousedown', (e) => {
+        isDragging = true;
+        currentY = e.clientY - yOffset;
+        initialY = e.clientY;
+        
+        searchResultsHeader.style.cursor = 'grabbing';
+    });
+
+    document.addEventListener('mousemove', (e) => {
+        if (isDragging) {
+            e.preventDefault();
+            const currentY = e.clientY - initialY;
+            searchResults.style.transform = `translateY(${currentY}px)`;
+        }
+    });
+
+    document.addEventListener('mouseup', () => {
+        isDragging = false;
+        searchResultsHeader.style.cursor = 'grab';
+        // 保存新位置
+        yOffset = currentY;
+    });
+
+    // 关闭搜索结果
+    closeSearchResults.addEventListener('click', () => {
+        hideSearchResults();
+    });
+
+    // 修改原有的搜索相关处理...
+});
+
+// 修改搜索结果显示/隐藏函数
+function showSearchResults() {
+    const searchResults = document.getElementById('searchResults');
+    searchResults.style.display = 'block';
+}
+
+function hideSearchResults() {
+    const searchResults = document.getElementById('searchResults');
+    searchResults.style.display = 'none';
+    // 清除所有固定高亮
+    document.querySelectorAll('.search-highlight-fixed').forEach(el => {
+        el.classList.remove('search-highlight-fixed');
+    });
+}
+
+// 修改搜索结果处理函数
+function performSearch() {
+    const searchTerm = searchInput.value.toLowerCase();
+    const searchModule = moduleCheckbox.checked;
+    const searchContext = contextCheckbox.checked;
+    
+    if (!searchTerm) {
+        clearHighlights();
+        return;
+    }
+    
+    const matches = [];
+    clearHighlights();
+    
+    // 获取当前活动页面的表格
+    const activePage = document.querySelector('.page.active');
+    const tableContent = activePage.querySelector('tbody');
+    const rows = tableContent.querySelectorAll('tr:not([style*="height"])');
+    
+    rows.forEach(row => {
+        let found = false;
+        const cells = row.querySelectorAll('td');
+        
+        if (cells.length > 0) {
+            if (searchModule && cells[3]) { // Module列
+                if (cells[3].textContent.toLowerCase().includes(searchTerm)) {
+                    found = true;
+                }
+            }
+            if (searchContext && cells[6]) { // Context列
+                if (cells[6].textContent.toLowerCase().includes(searchTerm)) {
+                    found = true;
+                }
+            }
+            
+            if (found) {
+                row.classList.add('search-highlight');
+                // 创建一个新行用于搜索结果显示
+                const resultRow = createSearchResultRow(cells, activePage.id.replace('-page', ''), row.dataset.index);
+                matches.push(resultRow);
+            }
+        }
+    });
+    
+    // 更新搜索结果
+    searchResultsContent.innerHTML = '';
+    matches.forEach(row => {
+        row.addEventListener('dblclick', async function(e) {
+            e.preventDefault();
+            const index = this.getAttribute('data-index');
+            const pageId = this.getAttribute('data-page');
+            
+            // 移除其他行的固定高亮
+            document.querySelectorAll('.search-highlight-fixed').forEach(el => {
+                el.classList.remove('search-highlight-fixed');
+            });
+            
+            // 切换到对应页面
+            const tab = document.querySelector(`.tab[data-page="${pageId}"]`);
+            if (tab) {
+                tab.click();
+                
+                // 等待页面切换完成并渲染
+                await new Promise(resolve => setTimeout(resolve, 100));
+                
+                // 查找并高亮目标行
+                const targetRow = findRowByIndex(index);
+                if (targetRow) {
+                    targetRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    targetRow.classList.add('search-highlight-fixed');
+                    
+                    // 确保高亮状态保持
+                    const observer = new MutationObserver((mutations, obs) => {
+                        if (!targetRow.classList.contains('search-highlight-fixed')) {
+                            targetRow.classList.add('search-highlight-fixed');
+                        }
+                    });
+                    
+                    observer.observe(targetRow, {
+                        attributes: true,
+                        attributeFilter: ['class']
+                    });
+                    
+                    // 30秒后停止观察
+                    setTimeout(() => observer.disconnect(), 30000);
+                }
+            }
+        });
+        searchResultsContent.appendChild(row);
+    });
+    
+    showSearchResults();
+    searchStatus.textContent = `找到 ${matches.length} 个匹配项`;
+}
+
+// 添加通过索引查找行的辅助函数
+function findRowByIndex(index) {
+    const activePage = document.querySelector('.page.active');
+    const rows = activePage.querySelectorAll('tr[data-index]');
+    return Array.from(rows).find(row => row.getAttribute('data-index') === index);
+}
+
+// 修改搜索结果窗口的拖拽和缩放功能
+document.addEventListener('DOMContentLoaded', () => {
+    const searchResults = document.getElementById('searchResults');
+    const searchResultsHeader = searchResults.querySelector('.search-results-header');
+    const resizeHandles = searchResults.querySelectorAll('.resize-handle');
+    
+    // 窗口拖动
+    let isDragging = false;
+    let currentX = 0;
+    let currentY = 0;
+    let initialX = 0;
+    let initialY = 0;
+
+    searchResultsHeader.addEventListener('mousedown', initDrag);
+    
+    function initDrag(e) {
+        if (e.target.closest('.close-button')) return;
+        
+        isDragging = true;
+        const rect = searchResults.getBoundingClientRect();
+        initialX = e.clientX - rect.left;
+        initialY = e.clientY - rect.top;
+        
+        searchResultsHeader.style.cursor = 'grabbing';
+    }
+    
+    // 窗口缩放
+    let isResizing = false;
+    let currentHandle = null;
+    
+    resizeHandles.forEach(handle => {
+        handle.addEventListener('mousedown', initResize);
+    });
+    
+    function initResize(e) {
+        isResizing = true;
+        currentHandle = e.target;
+        e.stopPropagation();
+    }
+    
+    document.addEventListener('mousemove', (e) => {
+        if (isDragging) {
+            e.preventDefault();
+            const x = e.clientX - initialX;
+            const y = e.clientY - initialY;
+            
+            // 确保窗口不会被拖出视口
+            const maxX = window.innerWidth - searchResults.offsetWidth;
+            const maxY = window.innerHeight - searchResults.offsetHeight;
+            
+            searchResults.style.left = `${Math.min(Math.max(0, x), maxX)}px`;
+            searchResults.style.top = `${Math.min(Math.max(0, y), maxY)}px`;
+        }
+        
+        if (isResizing && currentHandle) {
+            e.preventDefault();
+            const rect = searchResults.getBoundingClientRect();
+            
+            if (currentHandle.classList.contains('bottom-right')) {
+                const width = e.clientX - rect.left;
+                const height = e.clientY - rect.top;
+                if (width >= 400) searchResults.style.width = `${width}px`;
+                if (height >= 200) searchResults.style.height = `${height}px`;
+            }
+            // 添加其他角的缩放处理...
+        }
+    });
+    
+    document.addEventListener('mouseup', () => {
+        isDragging = false;
+        isResizing = false;
+        currentHandle = null;
+        searchResultsHeader.style.cursor = 'grab';
+    });
+});
+
+// 修改搜索结果行的创建和高亮处理
+function createSearchResultRow(cells, pageId, index) {
+    const row = document.createElement('tr');
+    row.setAttribute('data-page', pageId);
+    row.setAttribute('data-index', index);
+    
+    cells.forEach(cell => {
+        const td = document.createElement('td');
+        td.textContent = cell.textContent;
+        row.appendChild(td);
+    });
+    
+    // 添加双击事件处理
+    row.addEventListener('dblclick', async function(e) {
+        e.preventDefault();
+        const index = this.getAttribute('data-index');
+        const pageId = this.getAttribute('data-page');
+        
+        // 移除其他行的固定高亮
+        document.querySelectorAll('.search-highlight-fixed').forEach(el => {
+            el.classList.remove('search-highlight-fixed');
+        });
+        
+        // 切换到对应页面
+        const tab = document.querySelector(`.tab[data-page="${pageId}"]`);
+        if (tab) {
+            // 切换页面前记录目标行信息
+            const targetIndex = parseInt(index);
+            
+            // 切换页面
+            tab.click();
+            
+            // 等待页面切换和渲染完成
+            await new Promise(resolve => setTimeout(resolve, 200));
+            
+            // 直接找到目标索引所在的数据
+            const data = dataCache[pageId];
+            if (data) {
+                // 查找真实的数组索引
+                const arrayIndex = data.findIndex(item => 
+                    parseInt(item.parts[0]) === targetIndex
+                );
+                
+                if (arrayIndex !== -1) {
+                    // 计算滚动位置
+                    const rowHeight = 35;
+                    const tableContainer = tableContainers[pageId].content.closest('.table-container');
+                    const viewportHeight = tableContainer.clientHeight;
+                    const scrollPosition = (arrayIndex * rowHeight) - (viewportHeight / 2) + (rowHeight / 2);
+                    
+                    // 设置滚动位置
+                    tableContainer.scrollTop = scrollPosition;
+                    
+                    // 强制立即渲染目标行及其周围的行
+                    renderVisibleRows(pageId, scrollPosition);
+                    
+                    // 找到新渲染的目标行
+                    const targetRow = findRowByIndex(index);
+                    if (targetRow) {
+                        // 添加高亮
+                        targetRow.classList.add('search-highlight-fixed');
+                        
+                        // 确保高亮状态持续存在
+                        const observer = new MutationObserver(() => {
+                            if (!targetRow.classList.contains('search-highlight-fixed')) {
+                                targetRow.classList.add('search-highlight-fixed');
+                            }
+                        });
+                        
+                        observer.observe(targetRow, {
+                            attributes: true,
+                            attributeFilter: ['class']
+                        });
+                        
+                        // 存储当前状态
+                        syncState.currentHighlightedRow = targetRow;
+                        syncState.currentObserver = observer;
+                        
+                        // 30秒后自动清理
+                        setTimeout(() => {
+                            observer.disconnect();
+                            if (syncState.currentHighlightedRow === targetRow) {
+                                syncState.currentHighlightedRow = null;
+                                syncState.currentObserver = null;
+                            }
+                        }, 30000);
+                    }
+                }
+            }
+        }
+    });
+    
+    return row;
+}
+
+// 添加字体设置处理
+ipcRenderer.on('font-settings-changed', (event, settings) => {
+    // 应用字体设置到所有表格
+    const tables = document.querySelectorAll('.font-adjustable');
+    console.log('[DEBUG] Applying font settings to', tables.length, 'tables:', settings);
+    
+    tables.forEach(table => {
+        table.style.fontFamily = settings.fontFamily;
+        table.style.fontSize = `${settings.fontSize}px`;
+    });
+    
+    // 保存设置到本地存储
+    localStorage.setItem('fontSettings', JSON.stringify(settings));
+});
+
+// 修改 DOMContentLoaded 事件处理，添加字体设置加载
+document.addEventListener('DOMContentLoaded', () => {
+    // ...existing DOMContentLoaded code...
+    
+    // 加载保存的字体设置
+    const savedSettings = localStorage.getItem('fontSettings');
+    if (savedSettings) {
+        try {
+            const settings = JSON.parse(savedSettings);
+            console.log('[DEBUG] Loading saved font settings:', settings);
+            
+            const tables = document.querySelectorAll('.font-adjustable');
+            tables.forEach(table => {
+                table.style.fontFamily = settings.fontFamily;
+                table.style.fontSize = `${settings.fontSize}px`;
+            });
+        } catch (error) {
+            console.error('[ERROR] Failed to load font settings:', error);
+        }
+    }
+    
+    // ...rest of existing DOMContentLoaded code...
+});
+
+// 添加通过索引查找行的辅助函数
+function findRowByIndex(index) {
+    const activePage = document.querySelector('.page.active');
+    const rows = activePage.querySelectorAll('tr[data-index]');
+    return Array.from(rows).find(row => row.getAttribute('data-index') === index);
+}
+
+// 修改搜索结果窗口的拖拽和缩放功能
+document.addEventListener('DOMContentLoaded', () => {
+    const searchResults = document.getElementById('searchResults');
+    const searchResultsHeader = searchResults.querySelector('.search-results-header');
+    const resizeHandles = searchResults.querySelectorAll('.resize-handle');
+    
+    // 窗口拖动
+    let isDragging = false;
+    let currentX = 0;
+    let currentY = 0;
+    let initialX = 0;
+    let initialY = 0;
+
+    searchResultsHeader.addEventListener('mousedown', initDrag);
+    
+    function initDrag(e) {
+        if (e.target.closest('.close-button')) return;
+        
+        isDragging = true;
+        const rect = searchResults.getBoundingClientRect();
+        initialX = e.clientX - rect.left;
+        initialY = e.clientY - rect.top;
+        
+        searchResultsHeader.style.cursor = 'grabbing';
+    }
+    
+    // 窗口缩放
+    let isResizing = false;
+    let currentHandle = null;
+    
+    resizeHandles.forEach(handle => {
+        handle.addEventListener('mousedown', initResize);
+    });
+    
+    function initResize(e) {
+        isResizing = true;
+        currentHandle = e.target;
+        e.stopPropagation();
+    }
+    
+    document.addEventListener('mousemove', (e) => {
+        if (isDragging) {
+            e.preventDefault();
+            const x = e.clientX - initialX;
+            const y = e.clientY - initialY;
+            
+            // 确保窗口不会被拖出视口
+            const maxX = window.innerWidth - searchResults.offsetWidth;
+            const maxY = window.innerHeight - searchResults.offsetHeight;
+            
+            searchResults.style.left = `${Math.min(Math.max(0, x), maxX)}px`;
+            searchResults.style.top = `${Math.min(Math.max(0, y), maxY)}px`;
+        }
+        
+        if (isResizing && currentHandle) {
+            e.preventDefault();
+            const rect = searchResults.getBoundingClientRect();
+            
+            if (currentHandle.classList.contains('bottom-right')) {
+                const width = e.clientX - rect.left;
+                const height = e.clientY - rect.top;
+                if (width >= 400) searchResults.style.width = `${width}px`;
+                if (height >= 200) searchResults.style.height = `${height}px`;
+            }
+            // 添加其他角的缩放处理...
+        }
+    });
+    
+    document.addEventListener('mouseup', () => {
+        isDragging = false;
+        isResizing = false;
+        currentHandle = null;
+        searchResultsHeader.style.cursor = 'grab';
+    });
+});
+
+// 修改搜索结果行的创建和高亮处理
+function createSearchResultRow(cells, pageId, index) {
+    const row = document.createElement('tr');
+    row.setAttribute('data-page', pageId);
+    row.setAttribute('data-index', index);
+    
+    cells.forEach(cell => {
+        const td = document.createElement('td');
+        td.textContent = cell.textContent;
+        row.appendChild(td);
+    });
+    
+    // 添加双击事件处理
+    row.addEventListener('dblclick', async function(e) {
+        e.preventDefault();
+        const index = this.getAttribute('data-index');
+        const pageId = this.getAttribute('data-page');
+        
+        // 移除其他行的固定高亮
+        document.querySelectorAll('.search-highlight-fixed').forEach(el => {
+            el.classList.remove('search-highlight-fixed');
+        });
+        
+        // 切换到对应页面
+        const tab = document.querySelector(`.tab[data-page="${pageId}"]`);
+        if (tab) {
+            // 切换页面前记录目标行信息
+            const targetIndex = parseInt(index);
+            
+            // 切换页面
+            tab.click();
+            
+            // 等待页面切换和渲染完成
+            await new Promise(resolve => setTimeout(resolve, 200));
+            
+            // 直接找到目标索引所在的数据
+            const data = dataCache[pageId];
+            if (data) {
+                // 查找真实的数组索引
+                const arrayIndex = data.findIndex(item => 
+                    parseInt(item.parts[0]) === targetIndex
+                );
+                
+                if (arrayIndex !== -1) {
+                    // 计算滚动位置
+                    const rowHeight = 35;
+                    const tableContainer = tableContainers[pageId].content.closest('.table-container');
+                    const viewportHeight = tableContainer.clientHeight;
+                    const scrollPosition = (arrayIndex * rowHeight) - (viewportHeight / 2) + (rowHeight / 2);
+                    
+                    // 设置滚动位置
+                    tableContainer.scrollTop = scrollPosition;
+                    
+                    // 强制立即渲染目标行及其周围的行
+                    renderVisibleRows(pageId, scrollPosition);
+                    
+                    // 找到新渲染的目标行
+                    const targetRow = findRowByIndex(index);
+                    if (targetRow) {
+                        // 添加高亮
+                        targetRow.classList.add('search-highlight-fixed');
+                        
+                        // 确保高亮状态持续存在
+                        const observer = new MutationObserver(() => {
+                            if (!targetRow.classList.contains('search-highlight-fixed')) {
+                                targetRow.classList.add('search-highlight-fixed');
+                            }
+                        });
+                        
+                        observer.observe(targetRow, {
+                            attributes: true,
+                            attributeFilter: ['class']
+                        });
+                        
+                        // 存储当前状态
+                        syncState.currentHighlightedRow = targetRow;
+                        syncState.currentObserver = observer;
+                        
+                        // 30秒后自动清理
+                        setTimeout(() => {
+                            observer.disconnect();
+                            if (syncState.currentHighlightedRow === targetRow) {
+                                syncState.currentHighlightedRow = null;
+                                syncState.currentObserver = null;
+                            }
+                        }, 30000);
+                    }
+                }
+            }
+        }
+    });
+    
+    return row;
+}
